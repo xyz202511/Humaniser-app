@@ -1,26 +1,21 @@
 # app.py
 import streamlit as st
+from io import BytesIO
+from docx import Document
 import re
 import math
 import torch
 import numpy as np
 import faiss
-from datasketch import MinHash, MinHashLSH
-from transformers import GPT2LMHeadModel, GPT2TokenizerFast
-from sentence_transformers import SentenceTransformer
-from difflib import SequenceMatcher
-from io import BytesIO
-from docx import Document
 import torch.nn.functional as F
 from collections import Counter
-import nltk
-
-# Use local NLTK data folder included in repo
-nltk.data.path.append("./nltk_data")
+from difflib import SequenceMatcher
+from sentence_transformers import SentenceTransformer
+from transformers import GPT2LMHeadModel, GPT2TokenizerFast, AutoModelForSeq2SeqLM, AutoTokenizer
+from datasketch import MinHash, MinHashLSH
 
 st.set_page_config(page_title="Humaniser", layout="wide")
-st.title("Humaniser: Plagiarism & AI Detection Tool")
-st.write("Upload a Word document to analyze for plagiarism and AI-likeness.")
+st.title("Humaniser: Plagiarism & AI Detection & Humanisation Tool")
 
 # ---------------------------
 # CONFIGURATION
@@ -30,6 +25,7 @@ MINHASH_PERM = 128
 LSH_THRESHOLD = 0.3
 EMBED_MODEL_NAME = "paraphrase-MiniLM-L12-v2"
 GPT2_MODEL = "distilgpt2"
+HUMANISE_MODEL = "google/flan-t5-base"  # For rewriting
 USE_FAISS = True
 
 # ---------------------------
@@ -59,7 +55,7 @@ def extract_text_from_docx(file_bytes: BytesIO) -> str:
         doc = Document(file_bytes)
         return "\n".join(p.text for p in doc.paragraphs)
     except Exception as e:
-        st.error(f"Failed to read Word file: {e}")
+        st.error(f"Failed to read DOCX: {e}")
         return ""
 
 # ---------------------------
@@ -78,8 +74,7 @@ class PlagiarismIndex:
 
     def add_document(self, doc_id, text):
         text = normalize_text(text)
-        if not text:
-            raise ValueError("Empty document text.")
+        if not text: return
         self.doc_texts[doc_id] = text
         shingles = get_word_shingles(text)
         self.doc_shingles[doc_id] = shingles
@@ -93,7 +88,6 @@ class PlagiarismIndex:
         else:
             self.corpus_embeddings = np.vstack([self.corpus_embeddings, emb])
         self.corpus_ids.append(doc_id)
-
         if USE_FAISS:
             self._build_faiss()
 
@@ -218,34 +212,63 @@ class AIDetector:
                                "ttr": round(ttr_s,2)}}
 
 # ---------------------------
+# Humanisation Model
+# ---------------------------
+@st.cache_resource
+def load_humaniser_model():
+    model = AutoModelForSeq2SeqLM.from_pretrained(HUMANISE_MODEL)
+    tokenizer = AutoTokenizer.from_pretrained(HUMANISE_MODEL)
+    return model, tokenizer
+
+humanise_model, humanise_tokenizer = load_humaniser_model()
+
+def humanise_text(text, max_len=512):
+    inputs = humanise_tokenizer.encode("Paraphrase: " + text, return_tensors="pt", truncation=True, max_length=max_len)
+    outputs = humanise_model.generate(inputs, max_length=max_len, num_beams=5, early_stopping=True)
+    return humanise_tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+# ---------------------------
 # MAIN APP
 # ---------------------------
-uploaded_file = st.file_uploader("Choose a DOCX file", type="docx")
-
+uploaded_file = st.file_uploader("Upload DOCX", type=["docx"])
 if uploaded_file is not None:
-    file_bytes = BytesIO(uploaded_file.read())
-    text = extract_text_from_docx(file_bytes)
+    text = extract_text_from_docx(uploaded_file)
+    st.subheader("Original Text")
+    st.text_area("Content", text, height=300)
 
-    if text:
-        st.subheader("Document Text")
-        st.text_area("Content", text, height=300)
+    detector = AIDetector()
+    pl_index = PlagiarismIndex()
+    pl_index.add_document("uploaded_doc", text)  # Can add more corpus docs later
 
-        # Load models (cached)
-        @st.cache_resource
-        def load_models():
-            tokenizer = GPT2TokenizerFast.from_pretrained("distilgpt2")
-            gpt_model = GPT2LMHeadModel.from_pretrained("distilgpt2")
-            embed_model = SentenceTransformer("paraphrase-MiniLM-L12-v2")
-            return tokenizer, gpt_model, embed_model
+    if st.button("Check AI & Plagiarism"):
+        ai_res = detector.ai_score(text)
+        st.subheader("AI-likeness")
+        st.write(f"AI Score: {ai_res['score']} / 100")
+        st.json(ai_res['components'])
 
-        tokenizer, gpt_model, embed_model = load_models()
-        st.success("Models loaded. You can now process text for AI detection or embeddings.")
-        st.write(f"Document length (tokens): {len(tokenizer.tokenize(text))}")
+        plag_res = pl_index.query(text)
+        st.subheader("Plagiarism Matches")
+        for r in plag_res[:5]:
+            st.markdown(f"- Doc ID: {r['doc_id']}, Similarity: {round(r['jaccard']*100,2)}%")
 
-        # AI-likeness button
-        detector = AIDetector()
-        if st.button("Check AI-likeness"):
-            ai_result = detector.ai_score(text)
-            st.subheader("AI-likeness Result")
-            st.write(f"AI-Likeness Score: {ai_result['score']} / 100")
-            st.json(ai_result['components'])
+    if st.button("Humanise Document"):
+        humanised_text = humanise_text(text)
+        st.subheader("Humanised Text")
+        st.text_area("Humanised Content", humanised_text, height=300)
+
+        # Re-check
+        ai_after = detector.ai_score(humanised_text)
+        plag_after = pl_index.query(humanised_text)
+        st.subheader("After Humanisation")
+        st.write(f"AI Score: {ai_after['score']} / 100")
+        st.subheader("Plagiarism Matches")
+        for r in plag_after[:5]:
+            st.markdown(f"- Doc ID: {r['doc_id']}, Similarity: {round(r['jaccard']*100,2)}%")
+
+        # Download
+        doc = Document()
+        doc.add_paragraph(humanised_text)
+        doc_bytes = BytesIO()
+        doc.save(doc_bytes)
+        doc_bytes.seek(0)
+        st.download_button("Download Humanised DOCX", doc_bytes, file_name="Humanised_Output.docx")
