@@ -14,54 +14,13 @@ from docx import Document
 import torch.nn.functional as F
 from collections import Counter
 import nltk
-nltk.data.path.append("./nltk_data")
-# app.py
-import streamlit as st
-import nltk
-import re
-import torch
-from sentence_transformers import SentenceTransformer
-from transformers import GPT2LMHeadModel, GPT2TokenizerFast
 
 # Use local NLTK data folder included in repo
 nltk.data.path.append("./nltk_data")
 
 st.set_page_config(page_title="Humaniser", layout="wide")
 st.title("Humaniser: Plagiarism & AI Detection Tool")
-
 st.write("Upload a Word document to analyze for plagiarism and AI-likeness.")
-
-uploaded_file = st.file_uploader("Choose a DOCX file", type="docx")
-
-if uploaded_file is not None:
-    from io import BytesIO
-    from docx import Document
-
-    file_bytes = BytesIO(uploaded_file.read())
-    try:
-        doc = Document(file_bytes)
-        text = "\n".join([p.text for p in doc.paragraphs])
-        st.subheader("Document Text")
-        st.text_area("Content", text, height=300)
-    except Exception as e:
-        st.error(f"Failed to read DOCX: {e}")
-
-    # Load models (cached)
-    @st.cache_resource
-    def load_models():
-        tokenizer = GPT2TokenizerFast.from_pretrained("distilgpt2")
-        gpt_model = GPT2LMHeadModel.from_pretrained("distilgpt2")
-        embed_model = SentenceTransformer("paraphrase-MiniLM-L12-v2")
-        return tokenizer, gpt_model, embed_model
-
-    tokenizer, gpt_model, embed_model = load_models()
-
-    st.success("Models loaded. You can now process text for AI detection or embeddings.")
-
-    # Example: Show token count
-    st.write(f"Document length (tokens): {len(tokenizer.tokenize(text))}")
-
-# Ensure punkt tokenizer is present in ./nltk_data/tokenizers/punkt/
 
 # ---------------------------
 # CONFIGURATION
@@ -80,7 +39,6 @@ def normalize_text(t: str):
     return re.sub(r'\s+', ' ', t).strip()
 
 def simple_tokenize(text: str):
-    """Offline tokenizer: splits words by non-alphanumeric characters."""
     return re.findall(r'\w+', text.lower())
 
 def get_word_shingles(text: str, k=SHINGLE_K):
@@ -96,12 +54,7 @@ def minhash_from_shingles(shingles):
 def jaccard(set_a, set_b):
     return len(set_a & set_b) / len(set_a | set_b) if set_a or set_b else 0.0
 
-def longest_matching_spans(a: str, b: str, min_len=20):
-    s = SequenceMatcher(None, a, b)
-    return [(a[i:i+l], i, j, l) for i, j, l in s.get_matching_blocks() if l >= min_len]
-
 def extract_text_from_docx(file_bytes: BytesIO) -> str:
-    """Extract text from uploaded .docx Word file."""
     try:
         doc = Document(file_bytes)
         return "\n".join(p.text for p in doc.paragraphs)
@@ -263,3 +216,36 @@ class AIDetector:
                 "components": {"perplexity": round(perplexity_score,2),
                                "repetition": round(rep,2),
                                "ttr": round(ttr_s,2)}}
+
+# ---------------------------
+# MAIN APP
+# ---------------------------
+uploaded_file = st.file_uploader("Choose a DOCX file", type="docx")
+
+if uploaded_file is not None:
+    file_bytes = BytesIO(uploaded_file.read())
+    text = extract_text_from_docx(file_bytes)
+
+    if text:
+        st.subheader("Document Text")
+        st.text_area("Content", text, height=300)
+
+        # Load models (cached)
+        @st.cache_resource
+        def load_models():
+            tokenizer = GPT2TokenizerFast.from_pretrained("distilgpt2")
+            gpt_model = GPT2LMHeadModel.from_pretrained("distilgpt2")
+            embed_model = SentenceTransformer("paraphrase-MiniLM-L12-v2")
+            return tokenizer, gpt_model, embed_model
+
+        tokenizer, gpt_model, embed_model = load_models()
+        st.success("Models loaded. You can now process text for AI detection or embeddings.")
+        st.write(f"Document length (tokens): {len(tokenizer.tokenize(text))}")
+
+        # AI-likeness button
+        detector = AIDetector()
+        if st.button("Check AI-likeness"):
+            ai_result = detector.ai_score(text)
+            st.subheader("AI-likeness Result")
+            st.write(f"AI-Likeness Score: {ai_result['score']} / 100")
+            st.json(ai_result['components'])
