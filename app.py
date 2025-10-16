@@ -57,6 +57,12 @@ def extract_text_from_docx(file_bytes: BytesIO) -> str:
     except Exception as e:
         st.error(f"Failed to read DOCX: {e}")
         return ""
+def chunk_text(text, tokenizer, max_tokens=1024):
+    tokens = tokenizer.encode(text)
+    chunks = [tokens[i:i+max_tokens] for i in range(0, len(tokens), max_tokens)]
+    decoded_chunks = [tokenizer.decode(c, skip_special_tokens=True) for c in chunks]
+    return decoded_chunks
+
 
 # ---------------------------
 # PLAGIARISM INDEX
@@ -240,16 +246,19 @@ if uploaded_file is not None:
     pl_index = PlagiarismIndex()
     pl_index.add_document("uploaded_doc", text)  # Can add more corpus docs later
 
-    if st.button("Check AI & Plagiarism"):
-        ai_res = detector.ai_score(text)
-        st.subheader("AI-likeness")
-        st.write(f"AI Score: {ai_res['score']} / 100")
-        st.json(ai_res['components'])
+    if st.button("Check AI-likeness"):
+        chunks = chunk_text(text, detector.tokenizer, max_tokens=1024)
+        ai_scores = [detector.ai_score(c) for c in chunks]
+    
+        # Aggregate results
+        avg_score = sum([c['score'] for c in ai_scores if c['score'] is not None]) / len(ai_scores)
+        st.subheader("AI-likeness Result")
+        st.write(f"Average AI-Likeness Score: {avg_score:.2f} / 100")
+    
+        # Show per-chunk breakdown
+        for i, score in enumerate(ai_scores, 1):
+            st.write(f"Chunk {i}: {score['score']:.2f} / 100")
 
-        plag_res = pl_index.query(text)
-        st.subheader("Plagiarism Matches")
-        for r in plag_res[:5]:
-            st.markdown(f"- Doc ID: {r['doc_id']}, Similarity: {round(r['jaccard']*100,2)}%")
 
     if st.button("Humanise Document"):
         humanised_text = humanise_text(text)
