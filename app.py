@@ -13,6 +13,55 @@ from io import BytesIO
 from docx import Document
 import torch.nn.functional as F
 from collections import Counter
+import nltk
+nltk.data.path.append("./nltk_data")
+# app.py
+import streamlit as st
+import nltk
+import re
+import torch
+from sentence_transformers import SentenceTransformer
+from transformers import GPT2LMHeadModel, GPT2TokenizerFast
+
+# Use local NLTK data folder included in repo
+nltk.data.path.append("./nltk_data")
+
+st.set_page_config(page_title="Humaniser", layout="wide")
+st.title("Humaniser: Plagiarism & AI Detection Tool")
+
+st.write("Upload a Word document to analyze for plagiarism and AI-likeness.")
+
+uploaded_file = st.file_uploader("Choose a DOCX file", type="docx")
+
+if uploaded_file is not None:
+    from io import BytesIO
+    from docx import Document
+
+    file_bytes = BytesIO(uploaded_file.read())
+    try:
+        doc = Document(file_bytes)
+        text = "\n".join([p.text for p in doc.paragraphs])
+        st.subheader("Document Text")
+        st.text_area("Content", text, height=300)
+    except Exception as e:
+        st.error(f"Failed to read DOCX: {e}")
+
+    # Load models (cached)
+    @st.cache_resource
+    def load_models():
+        tokenizer = GPT2TokenizerFast.from_pretrained("distilgpt2")
+        gpt_model = GPT2LMHeadModel.from_pretrained("distilgpt2")
+        embed_model = SentenceTransformer("paraphrase-MiniLM-L12-v2")
+        return tokenizer, gpt_model, embed_model
+
+    tokenizer, gpt_model, embed_model = load_models()
+
+    st.success("Models loaded. You can now process text for AI detection or embeddings.")
+
+    # Example: Show token count
+    st.write(f"Document length (tokens): {len(tokenizer.tokenize(text))}")
+
+# Ensure punkt tokenizer is present in ./nltk_data/tokenizers/punkt/
 
 # ---------------------------
 # CONFIGURATION
