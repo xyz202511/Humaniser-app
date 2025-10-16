@@ -1,0 +1,9 @@
+streamlit
+nltk
+torch
+transformers
+sentence-transformers
+faiss-cpu
+datasketch
+python-docx
+numpy
